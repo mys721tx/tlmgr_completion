@@ -1,0 +1,114 @@
+#compdef tlmgr
+
+local -a commands
+commands=(
+    "backup"
+    "candidates"
+    "check"
+    "conf"
+    "dump-tlpdb"
+    "generate"
+    "gui"
+    "help"
+    "info"
+    "init-usertree"
+    "install"
+    "key"
+    "list"
+    "option"
+    "paper"
+    "path"
+    "pinning"
+    "platform"
+    "postaction"
+    "print-platform"
+    "print-platform-info"
+    "remove"
+    "repository"
+    "restore"
+    "search"
+    "shell"
+    "show"
+    "uninstall"
+    "update"
+    "version"
+)
+
+_arguments -s \
+    '1: :->command' \
+    '*:: :->args'
+
+case $state in
+    (command)
+        _describe -t commands 'tlmgr command' commands
+        ;;
+    (*)
+        case $words[1] in
+            (backup)
+                _files -g 'tgz'
+                ;;
+            (candidates)
+                ;;
+            (check)
+                ;;
+            (conf)
+                _files -g '*.conf'
+                ;;
+            (dump-tlpdb)
+                _files -g '*.tlpdb'
+                ;;
+            (generate)
+                ;;
+            (gui)
+                ;;
+            (help)
+                ;;
+            (info)
+                ;;
+            (init-usertree)
+                ;;
+            (install)
+                ;;
+            (key)
+                ;;
+            (list)
+                ;;
+            (option)
+                ;;
+            (paper)
+                ;;
+            (path)
+                ;;
+            (pinning)
+                ;;
+            (platform)
+                ;;
+            (postaction)
+                ;;
+            (print-platform)
+                ;;
+            (print-platform-info)
+                ;;
+            (remove)
+                ;;
+            (repository)
+                ;;
+            (restore)
+                ;;
+            (search)
+                ;;
+            (shell)
+                ;;
+            (show)
+                ;;
+            (uninstall)
+                ;;
+            (update)
+                ;;
+            (version)
+                ;;
+            (*)
+                ;;
+        esac
+        ;;
+esac
