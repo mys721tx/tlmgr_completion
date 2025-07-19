@@ -1,114 +1,587 @@
 #compdef tlmgr
 
-local -a commands
-commands=(
-    "backup"
-    "candidates"
-    "check"
-    "conf"
-    "dump-tlpdb"
-    "generate"
-    "gui"
-    "help"
-    "info"
-    "init-usertree"
-    "install"
-    "key"
-    "list"
-    "option"
-    "paper"
-    "path"
-    "pinning"
-    "platform"
-    "postaction"
-    "print-platform"
-    "print-platform-info"
-    "remove"
-    "repository"
-    "restore"
-    "search"
-    "shell"
-    "show"
-    "uninstall"
-    "update"
-    "version"
+# Zsh completion for tlmgr (TeX Live Manager)
+# Comprehensive completion based on tlmgr help sections analysis
+
+# Load cache functions
+autoload -U _cache_invalid _retrieve_cache _store_cache
+
+# Helper functions for tlmgr completion
+
+# Cache policy function - cache for 1 hour
+_tlmgr_cache_policy() {
+    local -a oldp
+    # Check if cache file is older than 1 hour
+    oldp=( "$1"(Nmh+1) )
+    (( $#oldp ))
+}
+
+_tlmgr_paper_sizes() {
+    local sizes
+    sizes=('a4' 'letter')
+    _describe 'paper sizes' sizes
+}
+
+_tlmgr_program_paper_sizes() {
+    local program="$1"
+    local -a sizes
+    local cache_policy
+
+    zstyle -s ":completion:${curcontext}:" cache-policy cache_policy
+    if [[ -z "$cache_policy" ]]; then
+        zstyle ":completion:${curcontext}:" cache-policy _tlmgr_cache_policy
+    fi
+
+    if ( [[ ${+_tlmgr_program_paper_sizes_cache} -eq 0 ]] || _cache_invalid "tlmgr-${program}-paper-sizes" ) &&
+        ! _retrieve_cache "tlmgr-${program}-paper-sizes"; then
+
+        # Get paper sizes for specific program using --list
+        sizes=()
+        while IFS= read -r line; do
+            # Skip empty lines and add each paper size without description
+            [[ -n "$line" ]] && sizes+=("$line")
+        done < <(tlmgr "$program" paper --list 2>/dev/null)
+
+        # Cache the result
+        _tlmgr_program_paper_sizes_cache=( "${sizes[@]}" )
+        _store_cache "tlmgr-${program}-paper-sizes" _tlmgr_program_paper_sizes_cache
+    else
+        sizes=( "${_tlmgr_program_paper_sizes_cache[@]}" )
+    fi
+
+    # If no sizes found or command failed, show a message
+    if [[ ${#sizes} -eq 0 ]]; then
+        _message "no paper sizes found for $program or command failed"
+        return 1
+    fi
+
+    _describe "paper sizes for $program" sizes
+}
+
+_tlmgr_program_paper() {
+    # Get the program name from words[1] in the current context
+    _tlmgr_program_paper_sizes "${words[1]}"
+}
+
+_tlmgr_program_paper_with_options() {
+    local -a all_options
+    local -a paper_sizes
+    local program="${words[1]}"
+
+    # Get paper sizes
+    paper_sizes=()
+    while IFS= read -r line; do
+        # Skip empty lines and add each paper size without description
+        [[ -n "$line" ]] && paper_sizes+=("$line")
+    done < <(tlmgr "$program" paper --list 2>/dev/null)
+
+    # Combine --list option with paper sizes
+    all_options=('--list')
+    all_options+=("${paper_sizes[@]}")
+
+    # If no sizes found, still offer --list
+    if [[ ${#paper_sizes} -eq 0 ]]; then
+        all_options=('--list')
+    fi
+
+    _describe "paper options and sizes" all_options
+}
+
+_tlmgr_platforms() {
+    local platforms
+    local cache_policy
+
+    zstyle -s ":completion:${curcontext}:" cache-policy cache_policy
+    if [[ -z "$cache_policy" ]]; then
+        zstyle ":completion:${curcontext}:" cache-policy _tlmgr_cache_policy
+    fi
+
+    if ( [[ ${+_tlmgr_platforms_cache} -eq 0 ]] || _cache_invalid "tlmgr-platforms" ) &&
+        ! _retrieve_cache "tlmgr-platforms"; then
+
+        # Get platform list, extract only the platform names (lines starting with 4 spaces)
+        # Remove the indentation and any trailing whitespace
+        platforms=()
+        while IFS= read -r line; do
+            platforms+=("$line")
+        done < <(tlmgr platform list 2>/dev/null | grep '^    [a-z0-9]' | sed 's/^    //' | sed 's/[[:space:]]*$//')
+
+        # Cache the result
+        _tlmgr_platforms_cache=( "${platforms[@]}" )
+        _store_cache "tlmgr-platforms" _tlmgr_platforms_cache
+    else
+        platforms=( "${_tlmgr_platforms_cache[@]}" )
+    fi
+
+    _describe 'platforms' platforms
+}
+
+_tlmgr_key_ids() {
+    local -a key_ids
+    local cache_policy
+
+    zstyle -s ":completion:${curcontext}:" cache-policy cache_policy
+    if [[ -z "$cache_policy" ]]; then
+        zstyle ":completion:${curcontext}:" cache-policy _tlmgr_cache_policy
+    fi
+
+    if ( [[ ${+_tlmgr_key_ids_cache} -eq 0 ]] || _cache_invalid "tlmgr-key-ids" ) &&
+        ! _retrieve_cache "tlmgr-key-ids"; then
+
+        # Get key IDs from tlmgr key list with UID information for easier identification
+        key_ids=()
+        while IFS= read -r line; do
+            key_ids+=("$line")
+        done < <(tlmgr key list 2>/dev/null | awk '
+            /^pub / {
+                in_key = 1;
+                next
+            }
+            in_key && /^[[:space:]]*[A-F0-9]{40}/ {
+                key_id = $1;
+                gsub(/^[[:space:]]*/, "", key_id);
+                next
+            }
+            in_key && /^uid.*\[.*\]/ {
+                # Extract the name/email from uid line
+                if (match($0, /\] (.+)$/)) {
+                    name = substr($0, RSTART+2, RLENGTH-2);
+                    gsub(/<[^>]*>/, "", name);  # Remove email for brevity
+                    gsub(/^[[:space:]]*|[[:space:]]*$/, "", name);  # Trim whitespace
+                    print key_id ":" name;
+                }
+                in_key = 0;
+                next
+            }
+            /^$/ { in_key = 0 }
+        ')
+
+        # Cache the result
+        _tlmgr_key_ids_cache=( "${key_ids[@]}" )
+        _store_cache "tlmgr-key-ids" _tlmgr_key_ids_cache
+    else
+        key_ids=( "${_tlmgr_key_ids_cache[@]}" )
+    fi
+
+    # If no keys found or parsing failed, show a message
+    if [[ ${#key_ids} -eq 0 ]]; then
+        _message "no keys found or tlmgr key list not available"
+        return 1
+    fi
+
+    _describe 'key IDs' key_ids
+}
+
+_tlmgr_generate_targets() {
+    local targets
+    targets=('language:Generate language files' 'fmtutil:Generate format utility files'
+             'updmap:Generate font map files' 'fmtutil-user:Generate user format utility files'
+             'updmap-user:Generate user font map files')
+    _describe 'generate targets' targets
+}
+
+_tlmgr_repositories() {
+    local repos
+    repos=('ctan:Automatic CTAN mirror selection'
+           'https\://mirror.ctan.org/systems/texlive/tlnet:Main CTAN repository')
+    _alternative \
+        'repositories:repositories:_describe "repositories" repos' \
+        'directories:directories:_directories' \
+        'urls:URLs:_urls'
+}
+
+_tlmgr_option_keys() {
+    local -a keys
+    local cache_policy
+
+    zstyle -s ":completion:${curcontext}:" cache-policy cache_policy
+    if [[ -z "$cache_policy" ]]; then
+        zstyle ":completion:${curcontext}:" cache-policy _tlmgr_cache_policy
+    fi
+
+    if ( [[ ${+_tlmgr_option_keys_cache} -eq 0 ]] || _cache_invalid "tlmgr-option-keys" ) &&
+        ! _retrieve_cache "tlmgr-option-keys"; then
+
+        # Get option data from tlmgr option showall and parse it
+        # Transform "Description (key): value" to "key:Description" format
+        keys=()
+        while IFS= read -r line; do
+            keys+=("$line")
+        done < <(tlmgr option showall 2>/dev/null | grep '(.*):' | sed -E 's/^(.+) \(([^)]+)\):.*$/\2:\1/')
+
+        # Cache the result
+        _tlmgr_option_keys_cache=( "${keys[@]}" )
+        _store_cache "tlmgr-option-keys" _tlmgr_option_keys_cache
+    else
+        keys=( "${_tlmgr_option_keys_cache[@]}" )
+    fi
+
+    # If parsing fails, show an error message instead of falling back to hardcoded values
+    if [[ ${#keys} -eq 0 ]]; then
+        _message "tlmgr option showall not available or parsing failed"
+        return 1
+    fi
+
+    _describe 'option keys' keys
+}
+
+_tlmgr_verify_levels() {
+    local levels
+    levels=('none:no verification' 'main:verify main repository only' 'all:verify all repositories')
+    _describe 'verification levels' levels
+}
+
+_tlmgr_gui_langs() {
+    local langs
+    langs=('en:English' 'cs:Czech' 'de:German' 'fr:French' 'it:Italian' 'ja:Japanese'
+           'nl:Dutch' 'pl:Polish' 'pt_BR:Brazilian Portuguese' 'ru:Russian' 'sk:Slovak'
+           'sl:Slovenian' 'sr:Serbian' 'uk:Ukrainian' 'vi:Vietnamese'
+           'zh_CN:Simplified Chinese' 'zh_TW:Traditional Chinese')
+    _describe 'GUI languages' langs
+}
+
+# Main completion
+local -a actions
+
+# Set up caching policy
+zstyle ':completion:*' use-cache on
+zstyle ':completion:*' cache-path ~/.zsh/cache
+
+# Configure completion behavior for tlmgr
+zstyle ':completion:*:tlmgr:*' menu select
+zstyle ':completion:*:tlmgr:*' list-colors ''
+zstyle ':completion:*:tlmgr:*' group-name ''
+zstyle ':completion:*:tlmgr:*' verbose yes
+zstyle ':completion:*:tlmgr:*' matcher-list 'm:{a-zA-Z}={A-Za-z}' 'r:|[._-]=* r:|=*' 'l:|=* r:|=*'
+
+actions=(
+    'arch:manage platform support (synonym for platform)'
+    'backup:make backups of packages'
+    'bug:show bug information'
+    'candidates:show available packages'
+    'check:check installation consistency'
+    'conf:show/edit configuration files'
+    'context:set paper size for context (syntax: context paper [size|--list])'
+    'dump-tlpdb:dump the TeX Live Package Database'
+    'dvips:set paper size for dvips (syntax: dvips paper [size|--list])'
+    'dvipdfmx:set paper size for dvipdfmx (syntax: dvipdfmx paper [size|--list])'
+    'generate:generate language/format/map files'
+    'gui:start graphical user interface'
+    'help:show help information'
+    'info:show package information'
+    'init-usertree:initialize user tree'
+    'install:install packages'
+    'key:manage repository keys'
+    'list:list packages'
+    'option:show/set options'
+    'paper:set paper size'
+    'path:manage PATH settings'
+    'pdftex:set paper size for pdftex (syntax: pdftex paper [size|--list])'
+    'pinning:manage package pinning'
+    'platform:manage platform support'
+    'postaction:run post-installation actions'
+    'print-platform:print platform information'
+    'print-platform-info:print detailed platform information'
+    'psutils:set paper size for psutils (syntax: psutils paper [size|--list])'
+    'remove:remove packages'
+    'repository:manage repositories'
+    'restore:restore from backup'
+    'search:search for packages'
+    'shell:start interactive shell'
+    'show:show package information'
+    'uninstall:uninstall packages'
+    'update:update packages'
+    'version:show version information'
+    'xdvi:set paper size for xdvi (syntax: xdvi paper [size|--list])'
 )
 
-_arguments -s \
-    '1: :->command' \
+_arguments -s -S \
+    '(--help -h)'{--help,-h}'[show help]' \
+    '(--version -v)'{--version,-v}'[show version]' \
+    '(-q --quiet)'{-q,--quiet}'[suppress informational messages]' \
+    '*'{-v,--verbose}'[increase verbosity]' \
+    '--repository=[specify package repository]:repository:_tlmgr_repositories' \
+    '--gui=[start GUI mode]:action:( )' \
+    '--gui-lang=[set GUI language]:language:_tlmgr_gui_langs' \
+    '--command-logfile=[set command log file]:file:_files' \
+    '--debug-translation[report untranslated messages]' \
+    '--machine-readable[output machine-readable format]' \
+    '--no-execute-actions[suppress execute actions]' \
+    '--package-logfile=[set package log file]:file:_files' \
+    '--pause[wait for user input before exiting]' \
+    '--persistent-downloads[enable persistent downloads]' \
+    '--no-persistent-downloads[disable persistent downloads]' \
+    '--pin-file=[change pinning file location]:file:_files' \
+    '--usermode[activate user mode]' \
+    '--usertree=[specify user tree directory]:directory:_directories' \
+    '--verify-repo=[set verification level]:level:_tlmgr_verify_levels' \
+    '1: :->action' \
     '*:: :->args'
 
 case $state in
-    (command)
-        _describe -t commands 'tlmgr command' commands
+    (action)
+        _describe "tlmgr action" actions
         ;;
-    (*)
+    (args)
         case $words[1] in
             (backup)
-                _files -g 'tgz'
+                _arguments -s \
+                    '--all[backup all packages]' \
+                    '--backupdir=[backup directory]:directory:_directories' \
+                    '--clean=[clean old backups]:number:' \
+                    '--dry-run[show actions without performing them]' \
+                    '*:package:'
+                ;;
+            (bug)
+                # No specific options or arguments
                 ;;
             (candidates)
+                _arguments -s \
+                    '*:package:'
                 ;;
             (check)
+                _arguments -s \
+                    '--use-svn[use subversion for consistency checks]' \
+                    '*:check type:(files depends executes runfiles all)'
                 ;;
             (conf)
-                _files -g '*.conf'
+                _arguments -s \
+                    '*:config:_files -g "*.conf"'
                 ;;
             (dump-tlpdb)
-                _files -g '*.tlpdb'
+                _arguments -s \
+                    '--local[dump local database]' \
+                    '--remote[dump remote database]' \
+                    '*:file:_files'
                 ;;
             (generate)
+                _arguments -s \
+                    '--dest=[destination directory]:directory:_directories' \
+                    '--localcfg=[local config file]:file:_files' \
+                    '--rebuild-sys[rebuild system files]' \
+                    '*:target:_tlmgr_generate_targets'
                 ;;
             (gui)
+                # GUI mode - no additional arguments needed
                 ;;
             (help)
+                _arguments -s \
+                    '*:action:_describe "actions" actions'
                 ;;
             (info)
+                _arguments -s \
+                    '--list[list mode]' \
+                    '--only-installed[show only installed packages]' \
+                    '--only-remote[show only remote packages]' \
+                    '--data=[specify data fields]:field:(name category revision shortdesc longdesc installed size relocatable depends cat-version cat-date cat-license cat-contact-home cat-contact-bugtracker cat-contact-announce cat-contact-development cat-contact-support)' \
+                    '--json[output in JSON format]' \
+                    '*:package:'
                 ;;
             (init-usertree)
+                # No specific arguments
                 ;;
             (install)
+                _arguments -s \
+                    '--dry-run[show actions without performing them]' \
+                    '--file[install from file]' \
+                    '--force[force installation]' \
+                    '--no-depends[do not install dependencies]' \
+                    '--no-depends-at-all[do not install any dependencies]' \
+                    '--reinstall[reinstall packages]' \
+                    '--with-doc[install documentation]' \
+                    '--with-src[install source files]' \
+                    '*:package:'
                 ;;
             (key)
+                if [[ $CURRENT -eq 2 ]]; then
+                    # First argument after 'key': show subcommands
+                    local -a key_actions
+                    key_actions=('list:list repository keys' 'add:add repository key' 'remove:remove repository key')
+                    _describe 'key actions' key_actions
+                else
+                    # Handle arguments for specific key subcommands
+                    case ${words[2]} in
+                        (add)
+                            _arguments -s \
+                                '*:key file:_files'
+                            ;;
+                        (remove)
+                            _arguments -s \
+                                '*:key id:_tlmgr_key_ids'
+                            ;;
+                        (list)
+                            # No additional arguments for list
+                            ;;
+                    esac
+                fi
                 ;;
             (list)
+                _arguments -s \
+                    '--only-installed[show only installed packages]' \
+                    '--only-remote[show only remote packages]' \
+                    '*:package pattern:'
                 ;;
             (option)
+                if [[ $CURRENT -eq 2 ]]; then
+                    # First argument: can be either a subcommand or an option key
+                    local -a subcmds
+                    subcmds=('show:show current settings' 'showall:show all settings' 'help:show help')
+                    _describe 'subcommands' subcmds
+                    _tlmgr_option_keys
+                elif [[ $CURRENT -eq 3 ]]; then
+                    # Second argument depends on first argument
+                    case $words[2] in
+                        (show|showall|help)
+                            # If first arg was a subcommand, second arg is an option key
+                            _tlmgr_option_keys
+                            ;;
+                        (*)
+                            # If first arg was an option key, second arg is the value
+                            _message "option value"
+                            ;;
+                    esac
+                else
+                    # Handle --json flag and other cases
+                    _arguments -s \
+                        '--json[output in JSON format]'
+                fi
                 ;;
             (paper)
+                _arguments -s \
+                    '--json[output in JSON format]' \
+                    '--list[list paper sizes]' \
+                    '*:paper size:_tlmgr_paper_sizes'
+                ;;
+            (xdvi|pdftex|dvips|dvipdfmx|context|psutils)
+                # Program-specific paper settings: <program> paper [papersize|--list]
+                if [[ ${words[2]} == "paper" ]]; then
+                    # Third position and beyond: offer both options and paper sizes in one list
+                    _tlmgr_program_paper_with_options
+                else
+                    # Second position: offer "paper" command
+                    _arguments -s \
+                        '1:command:(paper)'
+                fi
                 ;;
             (path)
+                _arguments -s \
+                    '1:action:(add remove)' \
+                    '--w32mode=[Windows mode]:mode:(user admin)'
                 ;;
             (pinning)
+                _arguments -s \
+                    '1:action:(show add remove)' \
+                    '2:repository:_tlmgr_repositories' \
+                    '*:package pattern:'
                 ;;
-            (platform)
+            (arch|platform)
+                case ${words[2]} in
+                    (set)
+                        _arguments -s \
+                            '--dry-run[show actions without performing them]' \
+                            '3: :_alternative "auto:auto detection:(auto)" "platforms:platform:_tlmgr_platforms"'
+                        ;;
+                    (add|remove)
+                        _arguments -s \
+                            '--dry-run[show actions without performing them]' \
+                            '*:platform:_tlmgr_platforms'
+                        ;;
+                    (list)
+                        _arguments -s \
+                            '--dry-run[show actions without performing them]'
+                        ;;
+                    (*)
+                        _arguments -s \
+                            '1:action:(list add remove set)' \
+                            '--dry-run[show actions without performing them]'
+                        ;;
+                esac
                 ;;
             (postaction)
+                _arguments -s \
+                    '1:action:(install remove)' \
+                    '--windowsmode=[Windows mode]:mode:(user admin)' \
+                    '--fileassocs[manage file associations]' \
+                    '--all[apply to all packages]' \
+                    '*:package:'
                 ;;
-            (print-platform)
-                ;;
-            (print-platform-info)
+            (print-platform|print-platform-info)
+                # No arguments
                 ;;
             (remove)
+                _arguments -s \
+                    '--all[remove all packages]' \
+                    '--backup[create backup]' \
+                    '--backupdir=[backup directory]:directory:_directories' \
+                    '--dry-run[show actions without performing them]' \
+                    '--force[force removal]' \
+                    '--no-depends[ignore dependencies]' \
+                    '--no-depends-at-all[ignore all dependencies]' \
+                    '*:package:'
                 ;;
             (repository)
+                _arguments -s \
+                    '1:action:(list add remove set)' \
+                    '*:repository:_tlmgr_repositories'
                 ;;
             (restore)
+                _arguments -s \
+                    '--all[restore all packages]' \
+                    '--backupdir=[backup directory]:directory:_directories' \
+                    '--dry-run[show actions without performing them]' \
+                    '--force[force restore]' \
+                    '*:package:'
                 ;;
             (search)
+                _arguments -s \
+                    '--file[search in file names]' \
+                    '--global[search globally]' \
+                    '--word[match whole words]' \
+                    '*:search term:'
                 ;;
             (shell)
+                # Interactive shell - no arguments
                 ;;
             (show)
+                _arguments -s \
+                    '--list[list mode]' \
+                    '--only-installed[show only installed packages]' \
+                    '--only-remote[show only remote packages]' \
+                    '*:package:'
                 ;;
             (uninstall)
+                _arguments -s \
+                    '--force[force uninstallation]' \
+                    '*:package:'
                 ;;
             (update)
+                _arguments -s \
+                    '--all[update all packages]' \
+                    '--self[update tlmgr itself]' \
+                    '--dry-run[show actions without performing them]' \
+                    '--list[list packages to be updated]' \
+                    '--exclude=[exclude packages]:package:' \
+                    '--no-auto-remove[do not automatically remove packages]' \
+                    '--no-auto-install[do not automatically install packages]' \
+                    '--reinstall-forcibly-removed[reinstall forcibly removed packages]' \
+                    '--backup[create backup]' \
+                    '--backupdir=[backup directory]:directory:_directories' \
+                    '--force[force update]' \
+                    '--no-depends[ignore dependencies]' \
+                    '--no-depends-at-all[ignore all dependencies]' \
+                    '--no-restart[do not restart after self-update]' \
+                    '*:package:'
                 ;;
             (version)
+                # No arguments
                 ;;
             (*)
+                # For unknown actions, no package completion to avoid slowness
                 ;;
         esac
         ;;
 esac
+
+# Local Variables:
+# mode: sh
+# End:

@@ -8,7 +8,11 @@
 # Standard hash for plugins, to not pollute the namespace
 typeset -gA Plugins
 
+# Add the completion directory to fpath
 fpath+="${0:A:h}/src"
+
+# Ensure the completion function is available
+autoload -U _tlmgr
 
 # Use alternate vim marks [[[ and ]]] as the original ones can
 # confuse nested substitutions, e.g.: ${${${VAR}}}
