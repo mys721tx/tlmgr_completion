@@ -12,7 +12,7 @@ autoload -U _cache_invalid _retrieve_cache _store_cache
 _tlmgr_cache_policy() {
     local -a oldp
     # Check if cache file is older than 1 hour
-    oldp=( "$1"(Nmh+1) )
+    oldp=( "$1"*(Nmh+1) )
     (( $#oldp ))
 }
 
@@ -99,12 +99,24 @@ _tlmgr_platforms() {
     if ( [[ ${+_tlmgr_platforms_cache} -eq 0 ]] || _cache_invalid "tlmgr-platforms" ) &&
         ! _retrieve_cache "tlmgr-platforms"; then
 
-        # Get platform list, extract only the platform names (lines starting with 4 spaces)
-        # Remove the indentation and any trailing whitespace
+        # Get platform list using awk to extract platform names (lines starting with 4 spaces)
         platforms=()
         while IFS= read -r line; do
             platforms+=("$line")
-        done < <(tlmgr platform list 2>/dev/null | grep '^    [a-z0-9]' | sed 's/^    //' | sed 's/[[:space:]]*$//')
+        done < <(tlmgr platform list 2>/dev/null | awk '
+            # Look for lines starting with exactly 4 spaces followed by alphanumeric characters
+            /^    [a-z0-9]/ {
+                # Remove the leading 4 spaces and any trailing whitespace
+                platform = $0
+                sub(/^    /, "", platform)
+                gsub(/[[:space:]]*$/, "", platform)
+
+                # Only print non-empty platform names
+                if (platform != "") {
+                    print platform
+                }
+            }
+        ')
 
         # Cache the result
         _tlmgr_platforms_cache=( "${platforms[@]}" )
@@ -143,12 +155,15 @@ _tlmgr_key_ids() {
                 next
             }
             in_key && /^uid.*\[.*\]/ {
-                # Extract the name/email from uid line
-                if (match($0, /\] (.+)$/)) {
-                    name = substr($0, RSTART+2, RLENGTH-2);
+                # Extract the name/email from uid line - look for pattern "] name"
+                bracket_pos = index($0, "] ")
+                if (bracket_pos > 0) {
+                    name = substr($0, bracket_pos + 2);
                     gsub(/<[^>]*>/, "", name);  # Remove email for brevity
                     gsub(/^[[:space:]]*|[[:space:]]*$/, "", name);  # Trim whitespace
-                    print key_id ":" name;
+                    if (name != "") {
+                        print key_id ":" name;
+                    }
                 }
                 in_key = 0;
                 next
@@ -181,13 +196,59 @@ _tlmgr_generate_targets() {
 }
 
 _tlmgr_repositories() {
-    local repos
-    repos=('ctan:Automatic CTAN mirror selection'
-           'https\://mirror.ctan.org/systems/texlive/tlnet:Main CTAN repository')
-    _alternative \
-        'repositories:repositories:_describe "repositories" repos' \
-        'directories:directories:_directories' \
-        'urls:URLs:_urls'
+    local -a repos
+    local default_repo
+    local cache_policy
+
+    zstyle -s ":completion:${curcontext}:" cache-policy cache_policy
+    if [[ -z "$cache_policy" ]]; then
+        zstyle ":completion:${curcontext}:" cache-policy _tlmgr_cache_policy
+    fi
+
+    if ( [[ ${+_tlmgr_repositories_cache} -eq 0 ]] || _cache_invalid "tlmgr-repositories" ) &&
+        ! _retrieve_cache "tlmgr-repositories"; then
+
+        # Get the default repository from tlmgr option repository
+        # Use exec to redirect all output and prevent completion pollution
+        default_repo=""
+        {
+            local output
+            output=$(tlmgr option repository 2>&1)
+            if [[ $? -eq 0 && -n "$output" ]]; then
+                default_repo=$(echo "$output" | awk '
+                    /Default package repository \(repository\):/ {
+                        # Extract the URL after the colon and space
+                        # Find the position of ": " and extract everything after it
+                        colon_pos = index($0, ": ")
+                        if (colon_pos > 0) {
+                            url = substr($0, colon_pos + 2)
+                            gsub(/^[[:space:]]*|[[:space:]]*$/, "", url)  # Trim whitespace
+                            if (url != "") {
+                                print url
+                            }
+                        }
+                    }
+                ')
+            fi
+        } >/dev/null 2>&1
+
+        # Build repository list with default repo first if found
+        repos=('ctan:Automatic CTAN mirror selection')
+        if [[ -n "$default_repo" ]]; then
+            repos+=("${default_repo}:Default repository")
+        fi
+        repos+=('https\://mirror.ctan.org/systems/texlive/tlnet:Main CTAN repository')
+
+        # Cache the result
+        _tlmgr_repositories_cache=( "${repos[@]}" )
+        _store_cache "tlmgr-repositories" _tlmgr_repositories_cache
+    else
+        repos=( "${_tlmgr_repositories_cache[@]}" )
+    fi
+
+    _describe "repositories" repos
+    _directories
+    _urls
 }
 
 _tlmgr_option_keys() {
@@ -202,12 +263,47 @@ _tlmgr_option_keys() {
     if ( [[ ${+_tlmgr_option_keys_cache} -eq 0 ]] || _cache_invalid "tlmgr-option-keys" ) &&
         ! _retrieve_cache "tlmgr-option-keys"; then
 
-        # Get option data from tlmgr option showall and parse it
+        # Get option data from tlmgr option showall and parse it using awk
         # Transform "Description (key): value" to "key:Description" format
         keys=()
         while IFS= read -r line; do
             keys+=("$line")
-        done < <(tlmgr option showall 2>/dev/null | grep '(.*):' | sed -E 's/^(.+) \(([^)]+)\):.*$/\2:\1/')
+        done < <(tlmgr option showall 2>/dev/null | awk '
+            # Look for lines with parentheses and colon pattern: "Description (key): value"
+            /\(.*\):/ {
+                # Extract the description and key using string manipulation
+                # Find the last occurrence of " (" to get the key
+                paren_pos = 0
+                temp_line = $0
+                while ((pos = index(temp_line, " (")) > 0) {
+                    paren_pos += pos
+                    temp_line = substr(temp_line, pos + 1)
+                }
+
+                if (paren_pos > 0) {
+                    # Extract description (everything before " (")
+                    description = substr($0, 1, paren_pos - 1)
+
+                    # Extract everything after " ("
+                    remainder = substr($0, paren_pos + 2)
+
+                    # Find the closing parenthesis and colon
+                    colon_pos = index(remainder, "):")
+                    if (colon_pos > 0) {
+                        key = substr(remainder, 1, colon_pos - 1)
+
+                        # Remove leading and trailing whitespace
+                        gsub(/^[[:space:]]*|[[:space:]]*$/, "", description)
+                        gsub(/^[[:space:]]*|[[:space:]]*$/, "", key)
+
+                        # Only print if both key and description are non-empty
+                        if (key != "" && description != "") {
+                            print key ":" description
+                        }
+                    }
+                }
+            }
+        ')
 
         # Cache the result
         _tlmgr_option_keys_cache=( "${keys[@]}" )
@@ -240,8 +336,82 @@ _tlmgr_gui_langs() {
     _describe 'GUI languages' langs
 }
 
+_tlmgr_conf_keys() {
+    local conf_type="$1"
+    local -a keys all_options
+    local cache_policy
+
+    zstyle -s ":completion:${curcontext}:" cache-policy cache_policy
+    if [[ -z "$cache_policy" ]]; then
+        zstyle ":completion:${curcontext}:" cache-policy _tlmgr_cache_policy
+    fi
+
+    if ( [[ ${+_tlmgr_conf_keys_cache} -eq 0 ]] || _cache_invalid "tlmgr-conf-${conf_type}-keys" ) &&
+        ! _retrieve_cache "tlmgr-conf-${conf_type}-keys"; then
+
+        # Get configuration keys from tlmgr conf command
+        keys=()
+        case "$conf_type" in
+            texmf|tlmgr|updmap)
+                # Use awk to parse configuration keys from tlmgr conf output
+                while IFS= read -r line; do
+                    keys+=("$line")
+                done < <(tlmgr conf "$conf_type" 2>/dev/null | awk '
+                    # Skip empty lines and comments
+                    /^[[:space:]]*$/ { next }
+                    /^[[:space:]]*#/ { next }
+
+                    # Look for lines with = sign (key = value format)
+                    /=/ {
+                        # Extract the part before the first =
+                        key = $0
+                        sub(/=.*$/, "", key)
+
+                        # Remove leading and trailing whitespace
+                        gsub(/^[[:space:]]*|[[:space:]]*$/, "", key)
+
+                        # Only print non-empty keys
+                        if (key != "") {
+                            print key
+                        }
+                    }
+                ')
+                ;;
+        esac
+
+        # Cache the result
+        _tlmgr_conf_keys_cache=( "${keys[@]}" )
+        _store_cache "tlmgr-conf-${conf_type}-keys" _tlmgr_conf_keys_cache
+    else
+        keys=( "${_tlmgr_conf_keys_cache[@]}" )
+    fi
+
+    # Combine options with configuration keys
+    all_options=('--delete:delete configuration value' '--conffile:specify config file')
+    all_options+=("${keys[@]}")
+
+    # If no keys found, still offer the options
+    if [[ ${#keys} -eq 0 ]]; then
+        _describe "configuration options for $conf_type" all_options
+        return 1
+    fi
+
+    _describe "configuration options and keys for $conf_type" all_options
+}
+
+_tlmgr_conf_auxtree_actions() {
+    local -a actions all_options
+    actions=('show:show auxiliary trees' 'add:add auxiliary tree' 'remove:remove auxiliary tree')
+
+    # Combine options with auxtree actions
+    all_options=('--conffile:specify config file')
+    all_options+=("${actions[@]}")
+
+    _describe 'auxtree options and actions' all_options
+}
+
 # Main completion
-local -a actions
+actions=()
 
 # Set up caching policy
 zstyle ':completion:*' use-cache on
@@ -300,7 +470,7 @@ _arguments -s -S \
     '(--version -v)'{--version,-v}'[show version]' \
     '(-q --quiet)'{-q,--quiet}'[suppress informational messages]' \
     '*'{-v,--verbose}'[increase verbosity]' \
-    '--repository=[specify package repository]:repository:_tlmgr_repositories' \
+    '(--repository --location --repo)'{--repository,--location,--repo}'[specify package repository]:repository:_tlmgr_repositories' \
     '--gui=[start GUI mode]:action:( )' \
     '--gui-lang=[set GUI language]:language:_tlmgr_gui_langs' \
     '--command-logfile=[set command log file]:file:_files' \
@@ -312,8 +482,8 @@ _arguments -s -S \
     '--persistent-downloads[enable persistent downloads]' \
     '--no-persistent-downloads[disable persistent downloads]' \
     '--pin-file=[change pinning file location]:file:_files' \
-    '--usermode[activate user mode]' \
-    '--usertree=[specify user tree directory]:directory:_directories' \
+    '(--usermode --user-mode)'{--usermode,--user-mode}'[activate user mode]' \
+    '(--usertree --user-tree)'{--usertree,--user-tree}'[specify user tree directory]:directory:_directories' \
     '--verify-repo=[set verification level]:level:_tlmgr_verify_levels' \
     '1: :->action' \
     '*:: :->args'
@@ -323,7 +493,7 @@ case $state in
         _describe "tlmgr action" actions
         ;;
     (args)
-        case $words[1] in
+        case ${words[1]} in
             (backup)
                 _arguments -s \
                     '--all[backup all packages]' \
@@ -346,13 +516,55 @@ case $state in
                 ;;
             (conf)
                 _arguments -s \
-                    '*:config:_files -g "*.conf"'
+                    '1: :->conf_subcommand' \
+                    '*: :->conf_args'
+
+                case $state in
+                    (conf_subcommand)
+                        conf_subcmds=(
+                            'texmf:show/edit texmf.cnf configuration'
+                            'tlmgr:show/edit tlmgr configuration'
+                            'updmap:show/edit updmap.cfg configuration'
+                            'auxtrees:manage auxiliary trees'
+                        )
+                        _describe 'configuration type' conf_subcmds
+                        ;;
+                    (conf_args)
+                        case ${words[2]} in
+                            (texmf|tlmgr|updmap)
+                                if [[ $CURRENT -eq 3 ]]; then
+                                    # Complete configuration keys and options
+                                    _tlmgr_conf_keys "${words[2]}"
+                                elif [[ $CURRENT -eq 4 ]]; then
+                                    # Complete values - just accept any input
+                                    _message "configuration value"
+                                fi
+                                ;;
+                            (auxtrees)
+                                if [[ $CURRENT -eq 3 ]]; then
+                                    # Complete auxtree actions and options
+                                    _tlmgr_conf_auxtree_actions
+                                elif [[ $CURRENT -eq 4 ]]; then
+                                    case ${words[3]} in
+                                        (add|remove)
+                                            # Complete directory paths for add/remove
+                                            _directories
+                                            ;;
+                                        (show)
+                                            # No further completion for show
+                                            ;;
+                                    esac
+                                fi
+                                ;;
+                        esac
+                        ;;
+                esac
                 ;;
             (dump-tlpdb)
                 _arguments -s \
-                    '--local[dump local database]' \
-                    '--remote[dump remote database]' \
-                    '*:file:_files'
+                    '(--local --remote)--local[dump local database]' \
+                    '(--local --remote)--remote[dump remote database]' \
+                    '--json[output in JSON format]'
                 ;;
             (generate)
                 _arguments -s \
@@ -368,7 +580,7 @@ case $state in
                 _arguments -s \
                     '*:action:_describe "actions" actions'
                 ;;
-            (info)
+            (info|show)
                 _arguments -s \
                     '--list[list mode]' \
                     '--only-installed[show only installed packages]' \
@@ -395,7 +607,6 @@ case $state in
             (key)
                 if [[ $CURRENT -eq 2 ]]; then
                     # First argument after 'key': show subcommands
-                    local -a key_actions
                     key_actions=('list:list repository keys' 'add:add repository key' 'remove:remove repository key')
                     _describe 'key actions' key_actions
                 else
@@ -424,13 +635,12 @@ case $state in
             (option)
                 if [[ $CURRENT -eq 2 ]]; then
                     # First argument: can be either a subcommand or an option key
-                    local -a subcmds
                     subcmds=('show:show current settings' 'showall:show all settings' 'help:show help')
                     _describe 'subcommands' subcmds
                     _tlmgr_option_keys
                 elif [[ $CURRENT -eq 3 ]]; then
                     # Second argument depends on first argument
-                    case $words[2] in
+                    case ${words[2]} in
                         (show|showall|help)
                             # If first arg was a subcommand, second arg is an option key
                             _tlmgr_option_keys
@@ -466,7 +676,7 @@ case $state in
             (path)
                 _arguments -s \
                     '1:action:(add remove)' \
-                    '--w32mode=[Windows mode]:mode:(user admin)'
+                    '(--windowsmode --w32mode)'{--windowsmode,--w32mode}'[Windows mode]:mode:(user admin)'
                 ;;
             (pinning)
                 _arguments -s \
@@ -500,15 +710,16 @@ case $state in
             (postaction)
                 _arguments -s \
                     '1:action:(install remove)' \
-                    '--windowsmode=[Windows mode]:mode:(user admin)' \
-                    '--fileassocs[manage file associations]' \
+                    '2:type:(shortcut fileassoc script)' \
+                    '(--windowsmode --w32mode)'{--windowsmode,--w32mode}'[Windows mode]:mode:(user admin)' \
+                    '--fileassocmode=[file association mode]:mode:(1 2)' \
                     '--all[apply to all packages]' \
                     '*:package:'
                 ;;
             (print-platform|print-platform-info)
                 # No arguments
                 ;;
-            (remove)
+            (remove|uninstall)
                 _arguments -s \
                     '--all[remove all packages]' \
                     '--backup[create backup]' \
@@ -535,24 +746,14 @@ case $state in
             (search)
                 _arguments -s \
                     '--file[search in file names]' \
-                    '--global[search globally]' \
-                    '--word[match whole words]' \
+                    '--all[search everything: package names, descriptions and filenames]' \
+                    '--global[search the TeX Live Database of the installation medium]' \
+                    '--word[match whole words only]' \
+                    '--json[output search results as JSON]' \
                     '*:search term:'
                 ;;
             (shell)
                 # Interactive shell - no arguments
-                ;;
-            (show)
-                _arguments -s \
-                    '--list[list mode]' \
-                    '--only-installed[show only installed packages]' \
-                    '--only-remote[show only remote packages]' \
-                    '*:package:'
-                ;;
-            (uninstall)
-                _arguments -s \
-                    '--force[force uninstallation]' \
-                    '*:package:'
                 ;;
             (update)
                 _arguments -s \
